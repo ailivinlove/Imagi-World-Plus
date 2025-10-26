@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Imagi‑World — Updated Premise Engine (Geom + Arithmetic)</title>
+  <style>
+    html,body{margin:0;padding:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,sans-serif;background:#0b0f14;color:#e6eef8}
+    header{padding:16px 20px;border-bottom:1px solid #1b2430;background:#0f1622}
+    header h1{margin:0;font-size:18px;font-weight:600}
+    main{max-width:1000px;margin:0 auto;padding:20px}
+    .panel{background:#0f1622;border:1px solid #1b2430;border-radius:10px;padding:16px;margin-bottom:16px}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    .row label{font-size:14px;opacity:.9}
+    .row input,.row select, .row button{background:#0b0f14;color:#e6eef8;border:1px solid #1b2430;border-radius:8px;padding:8px 10px}
+    .row button{cursor:pointer}
+    #premiseBox{font-size:28px;letter-spacing:.25px;line-height:1.2;padding:18px 20px;border-radius:12px;background:#0b1220;border:1px solid #1b2430;min-height:64px}
+    .controls{display:flex;gap:10px;flex-wrap:wrap}
+    .controls button{font-size:14px;padding:10px 14px}
+    .badge{display:inline-block;background:#122035;border:1px solid #1b2430;color:#a7c8ff;font-size:12px;padding:2px 8px;border-radius:999px}
+    .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+    table{border-collapse:collapse;width:100%}
+    td,th{border:1px solid #1b2430;padding:6px 8px;text-align:left;font-size:13px}
+    .muted{opacity:.75;font-size:12px}
+    code{background:#0b1220;border:1px solid #1b2430;padding:2px 6px;border-radius:6px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Imagi‑World — Premise Game (N‑back by composition)</h1>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="row">
+        <label>N‑back:</label>
+        <select id="nBack">
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select>
+        <label>Trials:</label>
+        <select id="nTrials">
+          <option>20</option><option>40</option><option selected>60</option><option>80</option>
+        </select>
+        <label>Seed:</label><input id="seed" type="number" value="123456789">
+        <label>Arithmetic ratio q:</label>
+        <input id="arithRatio" type="number" step="0.05" min="0" max="1" value="0.35">
+        <label>Seconds / trial:</label>
+        <input id="secPerTrial" type="number" step="0.5" min="0.5" value="3">
+        <button id="startBtn" type="button">Start</button>
+        <span class="badge" id="status">idle</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div id="premiseBox">Press Start</div>
+      <div class="controls">
+        <button id="btnMatch">Match (N)</button>
+        <button id="btnNoMatch">No Match (N)</button>
+        <button id="btnNext">Next</button>
+      </div>
+      <div class="row">
+        <span class="badge" id="trialBadge">Trial —</span>
+        <span class="badge" id="modeBadge">mode —</span>
+        <span class="badge" id="rtBadge">RT —</span>
+        <span class="badge" id="cdBadge">⏱ —</span>
+      </div>
+    </section>
+
+    <section class="panel grid">
+      <div>
+        <h3>Scoring</h3>
+        <table>
+          <tr><th>Hits</th><th>Misses</th><th>False Alarms</th><th>Correct Rejects</th><th>Accuracy</th></tr>
+          <tr>
+            <td id="mHits">0</td>
+            <td id="mMiss">0</td>
+            <td id="mFA">0</td>
+            <td id="mCR">0</td>
+            <td id="mAcc">0%</td>
+          </tr>
+        </table>
+        <p class="muted">A “match” occurs when the <em>resultant state vector</em> of the current trial equals the vector from N trials ago after quantization. Surface strings are irrelevant.</p>
+      </div>
+      <div>
+        <h3>Session</h3>
+        <table>
+          <tr><th>Trial</th><th>Premise</th><th>Mode</th><th>IsMatch</th></tr>
+          <tbody id="logBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>Mechanics</h3>
+      <ul>
+        <li>Symbols A–Z have identity and state: <code>pos(x,y)</code>, <code>level</code>, <code>polarity</code>, <code>intensity</code>, <code>phase</code>.</li>
+        <li>Transforms are pure and deterministic. Only transforms update state; identity never changes.</li>
+        <li>Two generators:
+          <ul>
+            <li><strong>GeomGen</strong>: rotation, reflection, scale, projection, midpoint, bisectors, orientation, lattice, etc. Output ≤ 7 words per premise line. Line names literal: <code>line U,V</code>.</li>
+            <li><strong>ArithGen</strong>: arithmetic expressions on letters using <code>+ − × ÷ √ ^ inverted</code> with optional scalar digits attached to letters (e.g., A2). Output ≤ 7 words.</li>
+          </ul>
+        </li>
+        <li>Scheduler picks generator with Bernoulli <code>q</code> then builds a non‑match by rejection or constructs an inverse composition to force a match.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script>
+  // ---------- Utility: seeded RNG ----------
+  function mulberry32(a){return function(){var t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;}}
+  function hashString(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(16)}
+  function clamp(v,min,max){return Math.max(min,Math.min(max,v))}
+  function quantize(v,eps=1e-6){return Math.round(v/eps)*eps}
+
+  // ---------- Canonical store ----------
+  function makeStore(){
+    const S={};
+    const letters='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+    for(const L of letters){
+      S[L]={
+        id:L,
+        pos:{x:0,y:0},
+        level:0,
+        polarity:0,
+        intensity:1,
+        phase:0
+      };
+    }
+    return S;
+  }
+  function cloneStore(S){return JSON.parse(JSON.stringify(S));}
+
+  // ---------- Transform library (pure) ----------
+  const T={
+    north(s){return {...s, level:s.level+1, intensity:s.intensity*1.05}},
+    south(s){return {...s, level:s.level-1, intensity:s.intensity*0.95}},
+    east(s){return {...s, pos:{x:s.pos.x+1,y:s.pos.y}, polarity:0}},
+    west(s){return {...s, pos:{x:s.pos.x-1,y:s.pos.y}, polarity: s.polarity===0?-1:-s.polarity}},
+    // geometric
+    rotate(s,deg){const rad=deg*Math.PI/180; const c=Math.cos(rad), d=Math.sin(rad);
+      const x=s.pos.x*c - s.pos.y*d, y=s.pos.x*d + s.pos.y*c;
+      return {...s, pos:{x,y}, phase:(s.phase+deg)%360};},
+    reflectAcrossCenter(s){return {...s, pos:{x:-s.pos.x,y:-s.pos.y}, polarity:-s.polarity}},
+    scaleFromCenter(s,k){return {...s, pos:{x:s.pos.x*k,y:s.pos.y*k}, intensity:s.intensity*Math.pow(1.02,k)}},
+    projectToLineUV(s, U, V){ // crude projection onto line through U,V in current S
+      const ux=U.pos.x, uy=U.pos.y, vx=V.pos.x, vy=V.pos.y;
+      const dx=vx-ux, dy=vy-uy, L2 = dx*dx+dy*dy || 1;
+      const t = ((s.pos.x-ux)*dx + (s.pos.y-uy)*dy)/L2;
+      return {...s, pos:{x:ux+t*dx, y:uy+t*dy}};
+    },
+    midpoint(a,b){return {x:(a.pos.x+b.pos.x)/2, y:(a.pos.y+b.pos.y)/2}},
+    // arithmetic semantics on intensity/level/polarity
+    add(s,k=1){return {...s, intensity: s.intensity + k}},
+    sub(s,k=1){return {...s, intensity: Math.max(0, s.intensity - k)}},
+    mul(s,k=2){return {...s, intensity: s.intensity * k}},
+    div(s,k=2){return {...s, intensity: s.intensity / (k||1)}},
+    sqrt(s){return {...s, intensity: Math.sqrt(Math.max(0, s.intensity))}},
+    powLevel(s,k=1){return {...s, level: s.level + k}},
+    invert(s){return {...s, polarity: s.polarity===0?-1:-s.polarity, pos:{x:-s.pos.x,y:-s.pos.y}}}
+  };
+
+  // ---------- Resultant vector hashing ----------
+  function resultantHash(S, touched){
+    const keys = Array.from(new Set(touched)).sort();
+    const parts = keys.map(k=>{
+      const s=S[k];
+      return [
+        s.id,
+        quantize(s.pos.x,1e-4).toFixed(4),
+        quantize(s.pos.y,1e-4).toFixed(4),
+        s.level,
+        s.polarity,
+        quantize(s.intensity,1e-6).toFixed(6),
+        Math.round(((s.phase%360)+360)%360)
+      ].join('|');
+    });
+    return hashString(parts.join('||'));
+  }
+
+  // ---------- Lexicon rules ----------
+  function sanitizeText(s){return s.replace(/\bopposite\b/gi,'inverted').replace(/\babout\b|\bexactly\b/gi,'').replace(/\s+/g,' ').trim()}
+  function within7Words(s){return s.split(/\s+/).filter(Boolean).length<=7}
+
+  // ---------- Novelty guard + RNG mixing ----------
+  (function(){
+    const MEM_KEY='iw_novelty_v1';
+    function loadMem(){
+      try{ return new Set(JSON.parse(localStorage.getItem(MEM_KEY)||'[]')); }catch(_){ return new Set(); }
+    }
+    function saveMem(set){
+      try{
+        const arr = Array.from(set).slice(-5000);
+        localStorage.setItem(MEM_KEY, JSON.stringify(arr));
+      }catch(_){ }
+    }
+
+    function structSig(txt){
+      const t = txt
+        .replace(/\b[A-Z]\d?\b/g,'L')
+        .replace(/√L/g,'SQRT')
+        .replace(/rotate(\d+)/ig,'ROT$1')
+        .replace(/\breflect\b/ig,'REF')
+        .replace(/\bproject\b/ig,'PROJ')
+        .replace(/\bmidpoint\b/ig,'MID')
+        .replace(/\bbisects\b/ig,'BIS')
+        .replace(/\bperp-bisector\b/ig,'PB')
+        .replace(/\binverted\b/ig,'INV')
+        .replace(/\bscale(\d+)/ig,'S$1')
+        .replace(/\b(north|south|east|west|northeast|northwest|southeast|southwest)\b/ig,(m)=>m.toUpperCase())
+        .replace(/\s+/g,' ')
+        .trim();
+      return t;
+    }
+
+    function hf(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return (h>>>0).toString(16); }
+
+    const Session = {
+      seenText: new Set(),
+      seenStructRecent: [],
+      mem: loadMem(),
+      lastRecordedText: null,
+      lastRecordedStruct: null,
+      lastRecordIsNew: false,
+      pendingAcceptance: false,
+      record(txt, opts){
+        const cfg = opts || {};
+        const sig = structSig(txt);
+        const hTxt = 'T:'+hf(txt.toLowerCase());
+        const hSig = 'S:'+hf(sig);
+        const isNew = !this.seenText.has(hTxt);
+        this.seenText.add(hTxt);
+        if(isNew){
+          this.seenStructRecent.push(hSig);
+          if(this.seenStructRecent.length>1600) this.seenStructRecent = this.seenStructRecent.slice(-1600);
+          this.mem.add(hTxt);
+          saveMem(this.mem);
+        }
+        this.lastRecordedText = hTxt;
+        this.lastRecordedStruct = hSig;
+        this.lastRecordIsNew = isNew;
+        this.pendingAcceptance = !!cfg.pending;
+      },
+      isNovel(txt, opts){
+        const cfg = opts || {};
+        const sig = structSig(txt);
+        const hTxt = 'T:'+hf(txt.toLowerCase());
+        const hSig = 'S:'+hf(sig);
+        if(!cfg.ignoreSession && this.seenText.has(hTxt)) {
+          if(this.pendingAcceptance && this.lastRecordedText === hTxt && this.lastRecordIsNew) {
+            return true;
+          }
+          return false;
+        }
+        const isFresh = !!(cfg.ignoreSession && this.lastRecordedText === hTxt);
+        if(this.mem.has(hTxt) && !isFresh) return false;
+        if(!cfg.ignoreSession && this.seenStructRecent.includes(hSig)) return false;
+        return true;
+      },
+      resetSession(){
+        this.seenText.clear();
+        this.seenStructRecent.length=0;
+        this.lastRecordedText=null;
+        this.lastRecordedStruct=null;
+        this.lastRecordIsNew=false;
+        this.pendingAcceptance=false;
+      }
+    };
+    window.IW_Novelty = Session;
+
+    function getSalt(){
+      try{
+        const k='iw_salt_v1';
+        let v = localStorage.getItem(k);
+        if(!v){
+          const buf=new Uint32Array(1);
+          (crypto&&crypto.getRandomValues) ? crypto.getRandomValues(buf) : (buf[0]=(Date.now()>>>0));
+          v = String(buf[0]>>>0);
+          localStorage.setItem(k,v);
+        }
+        return (parseInt(v,10)>>>0);
+      }catch(_){ return (Date.now()>>>0); }
+    }
+    (function(){
+      const RUN_KEY = 'iw_run_counter_v1';
+      function bumpRun(){
+        let n = 0;
+        try { n = parseInt(localStorage.getItem(RUN_KEY)||'0',10) || 0; } catch(_){ }
+        n = (n + 1) >>> 0;
+        try { localStorage.setItem(RUN_KEY, String(n)); } catch(_){ }
+        return n;
+      }
+      window.bumpRunCounter = bumpRun;
+      window.mixSeed = function(seed){
+        const base = (seed>>>0) ^ getSalt();
+        // add a per-run counter and a small jitter from time
+        const run = (typeof bumpRunCounter==='function' ? bumpRunCounter() : 0) >>> 0;
+        const jitter = (Date.now() & 0xffff) >>> 0;
+        return (base ^ (run*2654435761>>>0) ^ jitter) >>> 0;
+      };
+    })();
+  })();
+
+  // ---------- Geometric generator ----------
+  const GeomGen=(function(){
+    const ANGLES=[15,30,36,45,54,60,72,75,90,108,120,135,144,150,165,180];
+    const DIRS=['north','south','east','west','northeast','northwest','southeast','southwest'];
+    const LTRS='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+    function pick(r,arr){return arr[Math.floor(r()*arr.length)];}
+    function angle(r){return pick(r,ANGLES);}
+    function randLetter(r,excl=new Set(['U','V'])){ let L; for(let k=0;k<10;k++){ L=pick(r,LTRS); if(!excl.has(L)) break; } return L; }
+
+    function randTwoLetters(r, excl=new Set()){
+      let a, b;
+      for (let k=0;k<20;k++){
+        a = randLetter(r, excl);
+        b = randLetter(r, new Set([...excl, a]));
+        if (a !== b) break;
+      }
+      return [a,b];
+    }
+
+    function tplRotate(r){
+      const A=randLetter(r), C=randLetter(r);
+      return `${A} rotate${angle(r)} U from ${C}`;
+    }
+    function tplReflectLine(r){
+      const B=randLetter(r), S=randLetter(r,new Set());
+      const [L1,L2] = randTwoLetters(r, new Set([S,B]));
+      return `${B} reflect ${S} across line ${L1},${L2}`;
+    }
+    function tplMidpoint(r){
+      const A=randLetter(r), B=randLetter(r), C=randLetter(r);
+      return `${C} midpoint of ${A},${B}`;
+    }
+    function tplBisect(r){
+      return `V bisects angle SUT at U`;
+    }
+    function tplLattice(r){
+      const T=randLetter(r), S=randLetter(r);
+      const e=1+Math.floor(r()*3), n=1+Math.floor(r()*3);
+      return `${T} ${e} east ${n} north ${S}`;
+    }
+    function tplProject(r){
+      const A=randLetter(r), S=randLetter(r);
+      const [L1,L2] = randTwoLetters(r, new Set([A,S]));
+      return `${A} project ${S} to line ${L1},${L2}`;
+    }
+    function tplScale(r){
+      const B=randLetter(r), A=randLetter(r);
+      const k=2+Math.floor(r()*3);
+      return `${B} scale${k} U from ${A}`;
+    }
+    function tplDir(r){
+      const C=randLetter(r);
+      return `${C} ${pick(r,DIRS)} of U`;
+    }
+    const families=[tplRotate,tplReflectLine,tplMidpoint,tplBisect,tplLattice,tplProject,tplScale,tplDir];
+
+    function generate(r){
+      for(let guard=0; guard<1200; guard++){
+        const f = pick(r,families);
+        const txt = sanitizeText(f(r));
+        if(!within7Words(txt)) continue;
+        return { text: txt, touched: lettersTouched(txt) };
+      }
+      throw new Error('GeomGen failed: novelty budget exhausted');
+    }
+    return { generate };
+  })();
+
+  // ---------- Arithmetic generator ----------
+  const ArithGen=(function(){
+    const LTRS='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+    const BIN=['+','−','×','÷'];
+    function pick(r,a){return a[Math.floor(r()*a.length)];}
+    function L(r){return pick(r,LTRS);}
+    function maybeDigit(r){ return r()<0.6 ? String(2+Math.floor(r()*2)) : ''; }
+
+    function build(r){
+      const a = L(r) + (r()<0.5? maybeDigit(r):'');
+      const useSqrt = r()<0.5;
+      const b = (useSqrt?'√':'') + L(r) + (r()<0.35? maybeDigit(r):'');
+      const op = pick(r,BIN);
+      const tail = r()<0.5 ? (op+' '+b) : (op+' '+ 'inverted' +' '+ L(r));
+      const expr = (a+' '+tail).trim();
+      return sanitizeText(expr);
+    }
+    function generate(r){
+      for(let guard=0; guard<1600; guard++){
+        const txt = build(r);
+        if(!within7Words(txt)) continue;
+        return { text: txt, touched: lettersTouched(txt) };
+      }
+      throw new Error('ArithGen failed: novelty budget exhausted');
+    }
+    return { generate };
+  })();
+
+  // ---------- Token touch detection ----------
+  function lettersTouched(text){
+    const set = new Set();
+    const clean = text.replace(/[^A-Z]/g,' ');
+    clean.split(/\s+/).forEach(tok=>{ if(tok && tok.length===1) set.add(tok) });
+    return Array.from(set);
+  }
+
+  // ---------- Parser + evaluator ----------
+  function applyGeomPremise(S0, text){
+    const S = cloneStore(S0);
+    const touched = lettersTouched(text);
+    const r = /(\brotate(\d+)\b)|(\breflect\b)|(\bscale(\d+)\b)|(\bproject\b)|(\bmidpoint\b)|(\b(north|south|east|west|northeast|northwest|southeast|southwest)\b)|(\bbisects\b)|(\bsame line\b)/i;
+    // Minimal deterministic effects tied to keywords:
+    if(/rotate(\d+)/i.test(text)){
+      const m = /rotate(\d+)/i.exec(text); const deg = parseInt(m[1],10)||0;
+      for(const L of touched){ S[L]=T.rotate(S[L],deg); }
+    }
+    if(/\breflect\b/i.test(text) && !/across\s+line\s+([A-Z])\s*,\s*([A-Z])/i.test(text)){
+      for(const L of touched){ S[L]=T.reflectAcrossCenter(S[L]); }
+    }
+    if(/\bscale(\d+)/i.test(text)){
+      const m = /\bscale(\d+)/i.exec(text); const k = parseInt(m[1],10)||2;
+      for(const L of touched){ S[L]=T.scaleFromCenter(S[L],k); }
+    }
+    if(/\bproject\b/i.test(text) && /line\s+([A-Z])\s*,\s*([A-Z])/i.test(text)){
+      const m = /line\s+([A-Z])\s*,\s*([A-Z])/i.exec(text);
+      const L1 = m[1], L2 = m[2];
+      const P1=S[L1], P2=S[L2];
+      for(const L of touched){ if(L!==L1 && L!==L2){ S[L]=T.projectToLineUV(S[L],P1,P2);} }
+    }
+    if(/\breflect\b/i.test(text) && /across\s+line\s+([A-Z])\s*,\s*([A-Z])/i.test(text)){
+      const m = /across\s+line\s+([A-Z])\s*,\s*([A-Z])/i.exec(text);
+      const L1 = m[1], L2 = m[2];
+      for (const L of touched){
+        if (L===L1 || L===L2) continue;
+        const proj = T.projectToLineUV(S[L], S[L1], S[L2]);
+        const mx = 2*proj.pos.x - S[L].pos.x;
+        const my = 2*proj.pos.y - S[L].pos.y;
+        S[L] = {...S[L], pos:{x:mx,y:my}, polarity:-S[L].polarity};
+      }
+    }
+    if(/\bmidpoint\b/i.test(text)){
+      if(touched.includes('A') && touched.includes('B') && S['C']){
+        const m=T.midpoint(S['A'],S['B']); S['C']={...S['C'],pos:{x:m.x,y:m.y}};
+      }
+    }
+    if(/\bnorth\b/i.test(text)) for(const L of touched){ S[L]=T.north(S[L])}
+    if(/\bsouth\b/i.test(text)) for(const L of touched){ S[L]=T.south(S[L])}
+    if(/\beast\b/i.test(text))  for(const L of touched){ S[L]=T.east(S[L])}
+    if(/\bwest\b/i.test(text))  for(const L of touched){ S[L]=T.west(S[L])}
+    // diagonals as combined moves
+    if(/\bnortheast\b/i.test(text)){ for(const L of touched){ S[L]=T.north(T.east(S[L])) } }
+    if(/\bnorthwest\b/i.test(text)){ for(const L of touched){ S[L]=T.north(T.west(S[L])) } }
+    if(/\bsoutheast\b/i.test(text)){ for(const L of touched){ S[L]=T.south(T.east(S[L])) } }
+    if(/\bsouthwest\b/i.test(text)){ for(const L of touched){ S[L]=T.south(T.west(S[L])) } }
+    return { S, touched };
+  }
+
+  function applyArithPremise(S0, text){
+    const S = cloneStore(S0);
+    // Tokenize simple form like "A2 ÷ √B + inverted D"
+    const tokens = text.split(/\s+/);
+    // local scalars by letter like A2
+    function parseLetter(tok){
+      const m = /^([A-Z])(\d+)?$/.exec(tok);
+      if(!m) return null;
+      return {L:m[1], k: m[2]?parseInt(m[2],10):null};
+    }
+    // pass 1: apply unary prefixes and inverted
+    for(let i=0;i<tokens.length;i++){
+      if(/^√[A-Z]/.test(tokens[i])){
+        const L=tokens[i].slice(1,2); S[L]=T.sqrt(S[L]);
+        tokens[i]=L;
+      } else if(tokens[i].toLowerCase()==='inverted' && i+1<tokens.length && /^[A-Z]/.test(tokens[i+1])){
+        const L=tokens[i+1][0]; S[L]=T.invert(S[L]);
+      }
+      // exponent syntax like A^2 => level +2
+      if(/^[A-Z]\^\d+$/.test(tokens[i])){
+        const [L,exp]=tokens[i].split('^'); S[L]=T.powLevel(S[L], parseInt(exp,10)||1);
+        tokens[i]=L;
+      }
+      // attach scalar digit after letter means local mul intent but we encode in intensity baseline
+      const m=/^([A-Z])(\d+)$/.exec(tokens[i]); if(m){ const L=m[1],k=parseInt(m[2],10); S[L]=T.mul(S[L],k); tokens[i]=L; }
+    }
+    // pass 2: binary ops in sequence left→right
+    for(let i=0;i<tokens.length;i++){
+      const t=tokens[i];
+      if(t==='+'){ // add one unit to next letter
+        const nxt = parseLetter(tokens[i+1]||''); if(nxt) S[nxt.L]=T.add(S[nxt.L],1);
+      } else if(t==='−' || t==='-'){
+        const nxt = parseLetter(tokens[i+1]||''); if(nxt) S[nxt.L]=T.sub(S[nxt.L],1);
+      } else if(t==='×' || t==='*'){
+        const nxt = parseLetter(tokens[i+1]||''); if(nxt) S[nxt.L]=T.mul(S[nxt.L],2);
+      } else if(t==='÷' || t=='/'){
+        const nxt = parseLetter(tokens[i+1]||''); if(nxt) S[nxt.L]=T.div(S[nxt.L],2);
+      }
+    }
+    const touched = lettersTouched(text);
+    return { S, touched };
+  }
+
+  // ---------- Scheduler and game loop ----------
+  const Game=(function(){
+    let rng, S, log=[], Rbuf=[], t=0, N=2, totalTrials=60, pMatch=0.32, qArith=0.35;
+    let lastMode=null;
+    let trialStart=0;
+    function init(seed, nback, trials, q){
+      rng = mulberry32(window.mixSeed ? mixSeed(seed>>>0) : (seed>>>0));
+      S = makeStore();
+      log = []; Rbuf=[]; t=0; N=nback; totalTrials=trials; qArith=q; lastMode=null;
+    }
+    function sampleMode(){
+      const target = (rng()<qArith) ? 'arith' : 'geom';
+      if (lastMode===target && rng()<0.5) { lastMode = (target==='arith'?'geom':'arith'); return lastMode; }
+      lastMode = target; return lastMode;
+    }
+    function buildNonMatch(mode){
+      for(let guard=0; guard<200; guard++){
+        const g = mode==='arith' ? ArithGen.generate(rng) : GeomGen.generate(rng);
+        const text = g.text;
+        // reject surface duplicates
+        if (window.IW_Novelty && IW_Novelty.isNovel && !IW_Novelty.isNovel(text)) continue;
+        // Apply to shadow store
+        const S1 = cloneStore(S);
+        const res = (mode==='arith') ? applyArithPremise(S1,text) : applyGeomPremise(S1,text);
+        const Rh = resultantHash(res.S, res.touched);
+        if(t>=N && Rh === Rbuf[t-N]) continue; // accidental match -> resample
+        // commit
+        Object.assign(S, res.S);
+        const entry = {t, text, mode, isMatch:false, Rh};
+        if (window.IW_Novelty && IW_Novelty.record) IW_Novelty.record(text, { pending: true });
+        return entry;
+      }
+      throw new Error('buildNonMatch failed');
+    }
+    function buildMatch(mode){
+      // brute force search for an instruction that generates Rbuf[t-N]
+      const target = Rbuf[t-N];
+      for(let guard=0; guard<800; guard++){
+        const modeTry = mode; // keep same mode for match
+        const g = modeTry==='arith' ? ArithGen.generate(rng) : GeomGen.generate(rng);
+        const text = g.text;
+        if (window.IW_Novelty && IW_Novelty.isNovel && !IW_Novelty.isNovel(text)) continue;
+        const S1 = cloneStore(S);
+        const res = (modeTry==='arith') ? applyArithPremise(S1,text) : applyGeomPremise(S1,text);
+        const Rh = resultantHash(res.S, res.touched);
+        if(Rh !== target) continue;
+        // commit
+        Object.assign(S, res.S);
+        const entry = {t, text, mode:modeTry, isMatch:true, Rh};
+        if (window.IW_Novelty && IW_Novelty.record) IW_Novelty.record(text, { pending: true });
+        return entry;
+      }
+      // fallback: force non-match if not found
+      return buildNonMatch(mode);
+    }
+    function nextTrial(){
+      const mode = sampleMode();
+      const wantMatch = (t>=N) && (rng()<0.30);
+      const entry = wantMatch ? buildMatch(mode) : buildNonMatch(mode);
+      Rbuf.push(entry.Rh);
+      log.push(entry);
+      t++;
+      return entry;
+    }
+    function done(){return t>=totalTrials}
+    return { init, nextTrial, done, get t(){return t}, get N(){return N}, get log(){return log} };
+  })();
+  window.Game = Game;
+
+  // ---------- UI binding ----------
+  const ui={
+    nBack:document.getElementById('nBack'),
+    nTrials:document.getElementById('nTrials'),
+    seed:document.getElementById('seed'),
+    arithRatio:document.getElementById('arithRatio'),
+    startBtn:document.getElementById('startBtn'),
+    premiseBox:document.getElementById('premiseBox'),
+    btnMatch:document.getElementById('btnMatch'),
+    btnNoMatch:document.getElementById('btnNoMatch'),
+    btnNext:document.getElementById('btnNext'),
+    status:document.getElementById('status'),
+    trialBadge:document.getElementById('trialBadge'),
+    modeBadge:document.getElementById('modeBadge'),
+    rtBadge:document.getElementById('rtBadge'),
+    logBody:document.getElementById('logBody'),
+    hits:document.getElementById('mHits'),
+    miss:document.getElementById('mMiss'),
+    fa:document.getElementById('mFA'),
+    cr:document.getElementById('mCR'),
+    acc:document.getElementById('mAcc')
+  };
+  let curEntry=null, startTime=0, stats={hit:0, miss:0, fa:0, cr:0};
+  let secondsPerTrial = 3;      // default; read from input each trial
+  let autoRafId = 0;            // requestAnimationFrame handle
+  let trialDeadlineMs = 0;      // absolute time when current trial should auto-advance
+  let trialEpoch = 0;           // increments each trial to invalidate stale ticks
+
+  function clearTimers(){
+    if (autoRafId) { cancelAnimationFrame(autoRafId); autoRafId = 0; }
+    const cd = document.getElementById('cdBadge'); if (cd) cd.textContent = '⏱ —';
+  }
+
+  function startAutoAdvance(){
+    // read latest value each trial so user can adjust on the fly
+    const inp = document.getElementById('secPerTrial');
+    const val = inp ? parseFloat(inp.value) : NaN;
+    secondsPerTrial = isFinite(val) && val > 0 ? val : 3;
+
+    trialEpoch++; // new trial epoch
+    const myEpoch = trialEpoch;
+    const cd = document.getElementById('cdBadge');
+    const now = performance.now();
+    trialDeadlineMs = now + secondsPerTrial * 1000;
+
+    // stop any previous loop and start a new session loop
+    clearTimers();
+
+    function tick(ts){
+      // If a newer trial started, abandon this tick.
+      if (myEpoch !== trialEpoch) return;
+
+      // Session complete
+      if (typeof Game !== 'undefined' && Game.done && Game.done()){
+        if (cd) cd.textContent = '⏱ —';
+        autoRafId = 0;
+        return;
+      }
+
+      const remain = Math.max(0, (trialDeadlineMs - ts) / 1000);
+      if (cd) cd.textContent = '⏱ ' + remain.toFixed(1) + 's';
+
+      if (remain <= 0){
+        // Advance exactly once per epoch. next() will render and call startAutoAdvance() again,
+        // which bumps trialEpoch and installs a fresh tick with a new deadline.
+        next();
+        return;
+      }
+
+      autoRafId = requestAnimationFrame(tick);
+    }
+
+    autoRafId = requestAnimationFrame(tick);
+  }
+
+  function renderEntry(e){
+    ui.premiseBox.textContent = e.text;
+    ui.trialBadge.textContent = 'Trial '+(Game.t);
+    ui.modeBadge.textContent = e.mode;
+    ui.status.textContent = e.isMatch?'scheduled-match':'non-match';
+    ui.rtBadge.textContent = 'RT —';
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${Game.t}</td><td><code>${e.text}</code></td><td>${e.mode}</td><td>${e.isMatch}</td>`;
+    ui.logBody.appendChild(tr);
+    if (window.IW_Novelty && IW_Novelty.record && e && e.text) {
+      IW_Novelty.record(e.text);
+    }
+    if (typeof startAutoAdvance === 'function') startAutoAdvance();
+  }
+  window.renderEntry = renderEntry;
+
+  function updateAcc(){
+    const total = stats.hit+stats.miss+stats.fa+stats.cr;
+    const acc = total? ((stats.hit+stats.cr)/total*100).toFixed(1)+'%' : '0%';
+    ui.hits.textContent=stats.hit;
+    ui.miss.textContent=stats.miss;
+    ui.fa.textContent=stats.fa;
+    ui.cr.textContent=stats.cr;
+    ui.acc.textContent=acc;
+  }
+
+  function next(){
+    clearTimers();
+    if(Game.done()){ ui.status.textContent='complete'; return; }
+    curEntry = Game.nextTrial();
+    startTime = performance.now();
+    renderEntry(curEntry);
+  }
+  window.next = next;
+
+  function register(respMatch){
+    if(!curEntry) return;
+    const rt = performance.now()-startTime;
+    ui.rtBadge.textContent = 'RT '+rt.toFixed(0)+'ms';
+    if(curEntry.isMatch && respMatch){ stats.hit++; }
+    else if(curEntry.isMatch && !respMatch){ stats.miss++; }
+    else if(!curEntry.isMatch && respMatch){ stats.fa++; }
+    else { stats.cr++; }
+    updateAcc();
+    // Advance immediately on response
+    clearTimers();
+    if (!Game.done()) {
+      next();
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded',()=>{
+    if(ui.btnMatch) ui.btnMatch.addEventListener('click',()=>{ register(true); });
+    if(ui.btnNoMatch) ui.btnNoMatch.addEventListener('click',()=>{ register(false); });
+    if(ui.btnNext) ui.btnNext.addEventListener('click',()=>{ next(); });
+
+    document.addEventListener('keydown',(e)=>{
+      if(e.key==='m' || e.key==='M'){ register(true); }
+      else if(e.key==='k' || e.key==='K'){ register(false); }
+      else if(e.code==='Space'){ e.preventDefault(); next(); }
+    });
+  });
+  </script>
+
+  <script>
+(function(){
+  // ---------- Stable text hook (unchanged external name) ----------
+  if (typeof window.formatPremiseForSpeech !== 'function') {
+    window.formatPremiseForSpeech = function(p){
+      const raw = (p && typeof p === 'object' && 'text' in p) ? String(p.text||'') : String(p||'');
+      if (!raw) return '';
+      // 1) Token-level normalizer for arithmetic and geometry symbols
+      let s = raw
+        // normalize minus variants
+        .replace(/—|–/g,'-')
+        // add spaces around operators for tokenization safety
+        .replace(/([+\-×÷*/^()])/g,' $1 ')
+        .replace(/\s+/g,' ')
+        .trim();
+
+      // 2) Expand unary sqrt stuck to a letter, e.g., "√B" -> "square root B"
+      s = s.replace(/√\s*([A-Z])/g, 'square root $1');
+
+      // 3) Expand operators to words
+      s = s
+        .replace(/\b\+\b/g, ' plus ')
+        .replace(/\b-\b/g, ' minus ')
+        .replace(/\b−\b/g, ' minus ')
+        .replace(/\b×\b/g, ' times ')
+        .replace(/\b\*\b/g, ' times ')
+        .replace(/\b÷\b/g, ' divided by ')
+        .replace(/\b\/\b/g, ' divided by ');
+
+      // 4) Exponents like A^2 -> "A to the power of 2"
+      s = s.replace(/\b([A-Z])\s*\^\s*(\d+)\b/g, '$1 to the power of $2');
+
+      // 5) Digits attached to letters (A2) keep letter then number separate for clarity
+      s = s.replace(/\b([A-Z])(\d+)\b/g, '$1 $2');
+
+      // 6) Geometry phrasing helpers
+      // "project S to line X,Y" -> "project S to line X Y"
+      s = s.replace(/\bto line\s+([A-Z])\s*,\s*([A-Z])\b/g, 'to line $1 $2');
+      // "across line X,Y" -> "across line X Y"
+      s = s.replace(/\bacross line\s+([A-Z])\s*,\s*([A-Z])\b/g, 'across line $1 $2');
+
+      // 7) Keep "inverted" as is; Web Speech reads it fine.
+
+      return s.replace(/\s+/g,' ').trim();
+    };
+  }
+
+  // ---------- Web Speech TTS with warm-up (exact same public name: speak) ----------
+  (function(){
+    let voices = [];
+    let warmed = false;
+    function refreshVoices(){
+      try { voices = (window.speechSynthesis && speechSynthesis.getVoices()) || []; } catch(_) {}
+      return voices;
+    }
+    function pickVoice(){
+      const v = refreshVoices();
+      // prefer any English voice, else first
+      const en = v.find(x => (x.lang||'').toLowerCase().startsWith('en'));
+      return en || v[0] || null;
+    }
+    async function waitForVoices(timeoutMs=1000){
+      refreshVoices();
+      if (voices.length) return;
+      await new Promise(res=>{
+        let done=false;
+        const t=setTimeout(()=>{ if(!done){done=true;res();} }, timeoutMs);
+        const h=()=>{ if(!done){done=true; clearTimeout(t); res();} };
+        try {
+          if (window.speechSynthesis && 'onvoiceschanged' in speechSynthesis) {
+            speechSynthesis.onvoiceschanged=h;
+          } else {
+            // poll fallback
+            const p=setInterval(()=>{
+              if (refreshVoices().length){ clearInterval(p); h(); }
+            }, 100);
+          }
+        } catch(_) { res(); }
+      });
+    }
+    async function warmup(){
+      if (warmed) return;
+      if (!window.speechSynthesis) return;
+      await waitForVoices(1200);
+      try { if (window.speechSynthesis && speechSynthesis.paused) speechSynthesis.resume(); } catch(_){ }
+      try{
+        // Tiny unlock utterance. Some engines ignore empty strings, so speak a dot very quietly.
+        const u = new SpeechSynthesisUtterance('.');
+        const v = pickVoice();
+        if (v) u.voice = v;
+        u.lang = (v && v.lang) || 'en-US';
+        u.rate = 1.0; u.pitch = 1.0; u.volume = 0.001;
+        speechSynthesis.cancel();
+        speechSynthesis.speak(u);
+        warmed = true;
+      }catch(_){}
+    }
+
+    window.voiceEnabled = true;
+    window.speak = async function(text, opts){
+      try{
+        if (!window.voiceEnabled) return;
+        if (!window.speechSynthesis) return;
+        const t = String(text||'').trim();
+        if (!t) return;
+
+        // ensure voices loaded and engine resumed
+        await warmup();
+        try { speechSynthesis.cancel(); } catch(_){ }
+        try { if (speechSynthesis.paused) speechSynthesis.resume(); } catch(_){ }
+
+        const u = new SpeechSynthesisUtterance(t);
+        const v = pickVoice();
+        if (v) u.voice = v;
+        u.lang = (v && v.lang) || 'en-US';
+        u.rate = (opts && opts.rate) || 1.0;
+        u.pitch = (opts && opts.pitch) || 1.0;
+        u.volume = (opts && opts.volume) || 1.0;
+
+        // small async tick improves reliability on Safari/Chrome
+        setTimeout(()=>{
+          try { speechSynthesis.speak(u); } catch(e){ console.error('speak() failed', e); }
+        }, 0);
+      } catch(e){ console.error('speak() failed', e); }
+    };
+
+    // Hotkey to toggle voice (matches prior behavior if present)
+    document.addEventListener('keydown', ev=>{
+      if (ev.key==='v' || ev.key==='V') window.voiceEnabled = !window.voiceEnabled;
+    });
+  })();
+
+  // ---------- Start button harden + first-trial render + guaranteed TTS ----------
+  document.addEventListener('DOMContentLoaded', function(){
+    var startBtn = document.getElementById('startBtn');
+    if (!startBtn) return;
+
+    // Remove any stale handler then bind once
+    startBtn.onclick = null;
+    startBtn.addEventListener('click', function(ev){
+      ev.preventDefault();
+      try{
+        if (startBtn.disabled) return;
+        startBtn.disabled = true;
+
+        // Inputs
+        var seedEl = document.getElementById('seed');
+        var nBackEl = document.getElementById('nBack');
+        var nTrialsEl = document.getElementById('nTrials');
+        var ratioEl = document.getElementById('arithRatio');
+
+        var seed = seedEl ? (parseInt(seedEl.value||'123456789',10)>>>0) : (123456789>>>0);
+        var nback = nBackEl ? parseInt(nBackEl.value||'2',10) : 2;
+        var trials = nTrialsEl ? parseInt(nTrialsEl.value||'60',10) : 60;
+        var q = ratioEl ? Math.min(1,Math.max(0, parseFloat(ratioEl.value||'0.35'))) : 0.35;
+
+        // Initialize game
+        if (typeof Game !== 'undefined' && Game && typeof Game.init==='function' && typeof Game.nextTrial==='function') {
+          // reset scoreboard table if present
+          var logBody = document.getElementById('logBody');
+          if (logBody) logBody.innerHTML='';
+          ['mHits','mMiss','mFA','mCR'].forEach(id=>{ var el=document.getElementById(id); if (el) el.textContent='0'; });
+          var accEl=document.getElementById('mAcc'); if (accEl) accEl.textContent='0%';
+
+          Game.init(seed, nback, trials, q);
+          if (window.IW_Novelty && IW_Novelty.resetSession) IW_Novelty.resetSession();
+
+          try { if (window.speechSynthesis) { speechSynthesis.cancel(); speechSynthesis.resume(); } } catch(_){ }
+
+          var box = document.getElementById('premiseBox');
+          var tb = document.getElementById('trialBadge');
+          var mb = document.getElementById('modeBadge');
+          var st = document.getElementById('status');
+          var rt = document.getElementById('rtBadge');
+
+          function manualFirstRender(e){
+            if (!e) return null;
+            if (box) box.textContent = e.text;
+            if (tb) tb.textContent = 'Trial '+(Game.t);
+            if (mb) mb.textContent = e.mode;
+            if (st) st.textContent = e.isMatch?'scheduled-match':'non-match';
+            if (rt) rt.textContent = 'RT —';
+            var row = null;
+            if (logBody) {
+              row = document.createElement('tr');
+              row.innerHTML = '<td>'+Game.t+'</td><td><code>'+e.text+'</code></td><td>'+e.mode+'</td><td>'+e.isMatch+'</td>';
+              logBody.appendChild(row);
+            }
+            return row;
+          }
+
+          var entry = Game.nextTrial();
+          var manualRender = (typeof window.next === 'function');
+
+          if (window.IW_Novelty && entry && entry.text) {
+            let guard=0;
+            while (IW_Novelty.isNovel && !IW_Novelty.isNovel(entry.text) && guard<40) {
+              entry = Game.nextTrial();  // DO NOT re-init here; the per-run seed is already unique
+              guard++;
+            }
+          }
+
+          if (manualRender) {
+            manualFirstRender(entry);
+          } else if (typeof window.renderEntry === 'function') {
+            renderEntry(entry);
+          }
+
+          if (window.IW_Novelty && IW_Novelty.record && entry && entry.text) {
+            IW_Novelty.record(entry.text);
+          }
+
+          curEntry = entry;
+          startTime = performance.now();
+
+          if (typeof startAutoAdvance === 'function') startAutoAdvance();
+
+          // Speak via the historical hook
+          var spoken = (typeof window.formatPremiseForSpeech==='function') ? formatPremiseForSpeech(entry) : (entry && entry.text) || '';
+          if (spoken) window.speak(spoken);
+
+          // Update status
+          var statusEl = document.getElementById('status');
+          if (statusEl) statusEl.textContent = 'running';
+        }
+      } catch(err){
+        console.error('Start failed', err);
+        var statusEl = document.getElementById('status');
+        if (statusEl) statusEl.textContent = 'error';
+      } finally {
+        startBtn.disabled = false;
+      }
+    }, { passive:false });
+
+    // Also ensure subsequent renders speak, preserving original renderEntry signature
+    if (typeof window.renderEntry === 'function') {
+      var _origRender = window.renderEntry;
+      window.renderEntry = function(e){
+        var out = _origRender(e);
+        try{
+          var spoken = (typeof window.formatPremiseForSpeech==='function') ? formatPremiseForSpeech(e||'') : ((e&&e.text)||'');
+          if (spoken) window.speak(spoken);
+        }catch(err){ console.error('TTS render hook failed', err); }
+        return out;
+      };
+    } else {
+      // Fallback: speak when #premiseBox text changes
+      var box = document.getElementById('premiseBox');
+      if (box && window.MutationObserver) {
+        var last=''; new MutationObserver(function(){
+          var t=(box.textContent||'').trim();
+          if (t && t!==last){ last=t; window.speak(formatPremiseForSpeech(t)); }
+        }).observe(box,{childList:true,characterData:true,subtree:true});
+      }
+    }
+  });
+})();
+  </script>
+</body>
+</html>
